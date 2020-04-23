@@ -27,5 +27,5 @@ add_custom_command(
   COMMENT "Compiling Shaders"
 )
 
-include_directories("${CMAKE_SOURCE_DIR}/include")
+include_directories("${CMAKE_SOURCE_DIR}/include" "${CMAKE_SOURCE_DIR}/VulkanMemoryAllocator/src")
 target_link_libraries(main SDL2 Vulkan::Vulkan glm ${CMAKE_DL_LIBS})

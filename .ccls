@@ -1,6 +1,7 @@
 --gcc-toolchain=/usr/bin
 -std=c++17
 -Iinclude
+-IVulkanMemoryAllocator/src
 -Wall
 -Wextra
 -pedantic

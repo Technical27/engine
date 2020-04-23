@@ -1,3 +1,4 @@
+#define VMA_IMPLEMENTATION
 #include <vulkan.hpp>
 
 #ifdef USE_VALIDATION_LAYERS
@@ -231,6 +232,15 @@ static void createDevice() {
   vkctx.presentQueue = vkctx.device.getQueue(indices.presentFamily.value(), 0);
 }
 
+static void createAllocator() {
+  VmaAllocatorCreateInfo info = {};
+  info.physicalDevice = vkctx.physicalDevice;
+  info.device = vkctx.device;
+  info.instance = vkctx.instance;
+
+  vmaCreateAllocator(&info, &vkctx.allocator);
+}
+
 static vk::SurfaceFormatKHR
 chooseSurfaceFormat(const std::vector<vk::SurfaceFormatKHR>& availableFormats) {
   for (const auto& surfaceFormat : availableFormats) {
@@ -456,41 +466,108 @@ static void createCommandPool() {
   vkctx.commandPool = vkctx.device.createCommandPool(info);
 }
 
-static uint32_t findMemType(uint32_t typeFilter,
-                            vk::MemoryPropertyFlags props) {
-  auto memProps = vkctx.physicalDevice.getMemoryProperties();
-  for (uint32_t i = 0; i < memProps.memoryTypeCount; i++) {
-    if (typeFilter & (1 << i) &&
-        (memProps.memoryTypes[i].propertyFlags & props) == props) {
-      return i;
-    }
-  }
+static vk::Buffer createBuffer(vk::DeviceSize size, vk::BufferUsageFlags usage,
+                               vk::MemoryPropertyFlags props,
+                               VmaMemoryUsage memUsage,
+                               VmaAllocation& allocation) {
+  vk::BufferCreateInfo bufferInfo({}, size, usage);
 
-  throw std::runtime_error("failed to find suitable memory type!");
+  VmaAllocationCreateInfo allocInfo = {};
+  allocInfo.usage = memUsage;
+  allocInfo.requiredFlags = static_cast<uint32_t>(props);
+
+  vk::Buffer output;
+
+  vmaCreateBuffer(
+      vkctx.allocator, reinterpret_cast<VkBufferCreateInfo*>(&bufferInfo),
+      &allocInfo, reinterpret_cast<VkBuffer*>(&output), &allocation, nullptr);
+
+  return output;
+}
+
+static void copyBuffer(vk::Buffer srcBuffer, vk::Buffer dstBuffer,
+                       vk::DeviceSize size) {
+  vk::CommandBufferAllocateInfo allocInfo(vkctx.commandPool,
+                                          vk::CommandBufferLevel::ePrimary, 1);
+  vk::CommandBuffer commandBuffer =
+      vkctx.device.allocateCommandBuffers(allocInfo)[0];
+
+  vk::CommandBufferBeginInfo beginInfo(
+      vk::CommandBufferUsageFlagBits::eOneTimeSubmit);
+  commandBuffer.begin(beginInfo);
+  vk::BufferCopy copy(0, 0, size);
+  commandBuffer.copyBuffer(srcBuffer, dstBuffer, copy);
+  commandBuffer.end();
+
+  vk::SubmitInfo submitInfo;
+  submitInfo.commandBufferCount = 1;
+  submitInfo.pCommandBuffers = &commandBuffer;
+
+  vkctx.graphicsQueue.submit(1, &submitInfo, nullptr);
+  vkctx.graphicsQueue.waitIdle();
+
+  vkctx.device.freeCommandBuffers(vkctx.commandPool, 1, &commandBuffer);
 }
 
 static void createVertexBuffer() {
-  vk::BufferCreateInfo info({}, sizeof(Vertex) * vertices.size(),
-                            vk::BufferUsageFlagBits::eVertexBuffer,
-                            vk::SharingMode::eExclusive);
+  vk::DeviceSize bufferSize = sizeof(Vertex) * vertices.size();
+  VmaAllocation stagingAllocation;
+  auto stagingBuffer =
+      createBuffer(bufferSize, vk::BufferUsageFlagBits::eTransferSrc,
+                   vk::MemoryPropertyFlagBits::eHostVisible |
+                       vk::MemoryPropertyFlagBits::eHostCoherent,
+                   VMA_MEMORY_USAGE_CPU_ONLY, stagingAllocation);
 
-  vkctx.vertexBuffer = vkctx.device.createBuffer(info);
+  VmaAllocationInfo allocInfo;
 
-  auto memRequirements =
-      vkctx.device.getBufferMemoryRequirements(vkctx.vertexBuffer);
+  vmaGetAllocationInfo(vkctx.allocator, stagingAllocation, &allocInfo);
 
-  vk::MemoryAllocateInfo allocInfo(
-      memRequirements.size,
-      findMemType(memRequirements.memoryTypeBits,
-                  vk::MemoryPropertyFlagBits::eHostCoherent |
-                      vk::MemoryPropertyFlagBits::eHostVisible));
+  void* data = vkctx.device.mapMemory(allocInfo.deviceMemory, allocInfo.offset,
+                                      allocInfo.size);
+  SDL_memcpy(data, vertices.data(), bufferSize);
+  vkctx.device.unmapMemory(allocInfo.deviceMemory);
 
-  vkctx.vertexBufferMem = vkctx.device.allocateMemory(allocInfo);
-  vkctx.device.bindBufferMemory(vkctx.vertexBuffer, vkctx.vertexBufferMem, 0);
+  vkctx.vertexBuffer =
+      createBuffer(bufferSize,
+                   vk::BufferUsageFlagBits::eTransferDst |
+                       vk::BufferUsageFlagBits::eVertexBuffer,
+                   vk::MemoryPropertyFlagBits::eDeviceLocal,
+                   VMA_MEMORY_USAGE_GPU_ONLY, vkctx.vertexAllocation);
 
-  void* data = vkctx.device.mapMemory(vkctx.vertexBufferMem, 0, info.size);
-  SDL_memcpy(data, vertices.data(), info.size);
-  vkctx.device.unmapMemory(vkctx.vertexBufferMem);
+  copyBuffer(stagingBuffer, vkctx.vertexBuffer, bufferSize);
+
+  vmaDestroyBuffer(vkctx.allocator, stagingBuffer, stagingAllocation);
+}
+
+static void createIndexBuffer() {
+  vk::DeviceSize bufferSize = sizeof(uint16_t) * indices.size();
+
+  VmaAllocation stagingAllocation;
+  auto stagingBuffer =
+      createBuffer(bufferSize, vk::BufferUsageFlagBits::eTransferSrc,
+                   vk::MemoryPropertyFlagBits::eHostVisible |
+                       vk::MemoryPropertyFlagBits::eHostCoherent,
+                   VMA_MEMORY_USAGE_CPU_ONLY, stagingAllocation);
+
+  VmaAllocationInfo allocInfo;
+
+  vmaGetAllocationInfo(vkctx.allocator, stagingAllocation, &allocInfo);
+
+  void* data = vkctx.device.mapMemory(allocInfo.deviceMemory, allocInfo.offset,
+                                      allocInfo.size);
+  SDL_memcpy(data, indices.data(), bufferSize);
+  vkctx.device.unmapMemory(allocInfo.deviceMemory);
+
+  vkctx.indexBuffer =
+      createBuffer(bufferSize,
+                   vk::BufferUsageFlagBits::eTransferDst |
+                       vk::BufferUsageFlagBits::eIndexBuffer,
+                   vk::MemoryPropertyFlagBits::eDeviceLocal,
+                   VMA_MEMORY_USAGE_GPU_ONLY, vkctx.indexAllocation);
+
+  copyBuffer(stagingBuffer, vkctx.indexBuffer, bufferSize);
+
+  vmaDestroyBuffer(vkctx.allocator, stagingBuffer, stagingAllocation);
 }
 
 static void createCommandBuffers() {
@@ -523,7 +600,8 @@ static void createCommandBuffers() {
     buffer.setViewport(0, 1, &viewport);
     buffer.bindVertexBuffers(0, std::array<vk::Buffer, 1>({vkctx.vertexBuffer}),
                              {0});
-    buffer.draw(vertices.size(), 1, 0, 0);
+    buffer.bindIndexBuffer(vkctx.indexBuffer, 0, vk::IndexType::eUint16);
+    buffer.drawIndexed(static_cast<uint32_t>(indices.size()), 1, 0, 0, 0);
     buffer.endRenderPass();
 
     buffer.end();
@@ -632,6 +710,7 @@ void initVulkan() {
   createSurface();
   pickPhysicalDevice();
   createDevice();
+  createAllocator();
   createSwapchain();
   createImageViews();
   createRenderPass();
@@ -639,14 +718,16 @@ void initVulkan() {
   createFramebuffers();
   createCommandPool();
   createVertexBuffer();
+  createIndexBuffer();
   createCommandBuffers();
   createSyncObjects();
 }
 
 void cleanupVulkan() {
   cleanupSwapchain();
-  vkctx.device.destroyBuffer(vkctx.vertexBuffer);
-  vkctx.device.freeMemory(vkctx.vertexBufferMem);
+  vmaDestroyBuffer(vkctx.allocator, vkctx.vertexBuffer, vkctx.vertexAllocation);
+  vmaDestroyBuffer(vkctx.allocator, vkctx.indexBuffer, vkctx.indexAllocation);
+  vmaDestroyAllocator(vkctx.allocator);
   vkctx.device.destroyPipeline(vkctx.pipeline);
   vkctx.device.destroyPipelineLayout(vkctx.pipelineLayout);
   for (uint8_t i = 0; i < vkctx.MAX_FRAMES_IN_FLIGHT; i++) {

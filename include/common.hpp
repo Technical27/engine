@@ -1,5 +1,11 @@
 #include <SDL2/SDL.h>
 #include <bits/stdc++.h>
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wunused-parameter"
+#pragma GCC diagnostic ignored "-Wmissing-field-initializers"
+#pragma GCC diagnostic ignored "-Wtype-limits"
+#include <vk_mem_alloc.h>
+#pragma GCC diagnostic pop
 #include <vulkan/vulkan.hpp>
 
 #ifndef ENGINE_COMMON_HPP
@@ -40,7 +46,10 @@ struct VulkanContext {
   vk::CommandPool commandPool;
 
   vk::Buffer vertexBuffer;
-  vk::DeviceMemory vertexBufferMem;
+  VmaAllocation vertexAllocation;
+  vk::Buffer indexBuffer;
+  VmaAllocation indexAllocation;
+
   std::vector<vk::CommandBuffer> commandBuffers;
 
   vk::Queue graphicsQueue;
@@ -56,6 +65,8 @@ struct VulkanContext {
 
   bool framebufferResized = false;
   bool minimized = false;
+
+  VmaAllocator allocator;
 };
 
 #endif
