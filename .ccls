@@ -1,0 +1,7 @@
+--gcc-toolchain=/usr/bin
+-std=c++17
+-Iinclude
+-Wall
+-Wextra
+-pedantic
+-DUSE_VALIDATION_LAYERS
