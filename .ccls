@@ -2,6 +2,7 @@
 -std=c++17
 -Iinclude
 -IVulkanMemoryAllocator/src
+-Istb
 -Wall
 -Wextra
 -pedantic

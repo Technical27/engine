@@ -12,7 +12,7 @@ int main() {
     while (SDL_PollEvent(evt)) {
       switch (evt->type) {
       case SDL_QUIT:
-      case SDL_KEYDOWN:
+        // case SDL_KEYDOWN:
         quit = true;
         break;
       case SDL_WINDOWEVENT:

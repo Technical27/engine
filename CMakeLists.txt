@@ -17,6 +17,7 @@ add_executable(
   src/main.cpp
   src/vulkan.cpp
   src/sdl.cpp
+  src/image.cpp
 )
 
 add_custom_command(
@@ -27,5 +28,5 @@ add_custom_command(
   COMMENT "Compiling Shaders"
 )
 
-include_directories("${CMAKE_SOURCE_DIR}/include" "${CMAKE_SOURCE_DIR}/VulkanMemoryAllocator/src")
+include_directories("${CMAKE_SOURCE_DIR}/include" "${CMAKE_SOURCE_DIR}/VulkanMemoryAllocator/src" "${CMAKE_SOURCE_DIR}/stb")
 target_link_libraries(main SDL2 Vulkan::Vulkan glm ${CMAKE_DL_LIBS})

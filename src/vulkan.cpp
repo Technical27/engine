@@ -158,21 +158,18 @@ querySwapchainSupport(vk::PhysicalDevice device) {
 
 static inline bool checkDevice(vk::PhysicalDevice device) {
   auto indices = getQueueIndices(device);
-  bool supported = indices.isComplete();
+  bool indicesSupported = indices.isComplete();
 
-  if (!supported)
-    return false;
+  bool extensionsSupported = checkDeviceExtensionSupport(device);
 
-  supported = checkDeviceExtensionSupport(device);
-
-  if (!supported)
-    return false;
+  auto features = device.getFeatures();
 
   auto swapchainSupport = querySwapchainSupport(device);
-  supported = !swapchainSupport.formats.empty() &&
-              !swapchainSupport.presentModes.empty();
+  bool swapchainSupported = !swapchainSupport.formats.empty() &&
+                            !swapchainSupport.presentModes.empty();
 
-  return supported;
+  return indicesSupported && extensionsSupported && swapchainSupported &&
+         features.samplerAnisotropy;
 }
 
 static void pickPhysicalDevice() {
@@ -210,6 +207,7 @@ static void createDevice() {
   }
 
   vk::PhysicalDeviceFeatures features;
+  features.samplerAnisotropy = VK_TRUE;
 
   // if we use validation layers, then we enable them
   // otherwise we don't provide any layers
@@ -323,11 +321,8 @@ static void createSwapchain() {
 static void createImageViews() {
   vkctx.swapchainImageViews.resize(vkctx.swapchainImages.size());
   for (size_t i = 0; i < vkctx.swapchainImages.size(); i++) {
-    vk::ImageViewCreateInfo info(
-        {}, vkctx.swapchainImages[i], vk::ImageViewType::e2D,
-        vkctx.swapchainImageFormat, vk::ComponentMapping(),
-        vk::ImageSubresourceRange(vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1));
-    vkctx.swapchainImageViews[i] = vkctx.device.createImageView(info);
+    vkctx.swapchainImageViews[i] =
+        createImageView(vkctx.swapchainImages[i], vkctx.swapchainImageFormat);
   }
 }
 
@@ -379,6 +374,24 @@ static void createRenderPass() {
   vkctx.renderPass = vkctx.device.createRenderPass(info);
 }
 
+static void createDescriptorSetLayout() {
+  vk::DescriptorSetLayoutBinding descriptorBinding(
+      0, vk::DescriptorType::eUniformBuffer, 1,
+      vk::ShaderStageFlagBits::eVertex);
+
+  vk::DescriptorSetLayoutBinding samplerBinding(
+      1, vk::DescriptorType::eCombinedImageSampler, 1,
+      vk::ShaderStageFlagBits::eFragment, nullptr);
+
+  std::array<vk::DescriptorSetLayoutBinding, 2> bindings = {descriptorBinding,
+                                                            samplerBinding};
+
+  vk::DescriptorSetLayoutCreateInfo info(
+      {}, static_cast<uint32_t>(bindings.size()), bindings.data());
+
+  vkctx.descriptorLayout = vkctx.device.createDescriptorSetLayout(info);
+}
+
 static void createPipeline() {
   auto vertCode = readFile("shaders/triangle.vert.spv");
   auto fragCode = readFile("shaders/triangle.frag.spv");
@@ -411,8 +424,8 @@ static void createPipeline() {
 
   vk::PipelineRasterizationStateCreateInfo rasterizerInfo(
       {}, VK_FALSE, VK_FALSE, vk::PolygonMode::eFill,
-      vk::CullModeFlagBits::eBack, vk::FrontFace::eClockwise, VK_FALSE, 0.0f,
-      0.0f, 0.0f, 1.0f);
+      vk::CullModeFlagBits::eBack, vk::FrontFace::eCounterClockwise, VK_FALSE,
+      0.0f, 0.0f, 0.0f, 1.0f);
 
   vk::PipelineMultisampleStateCreateInfo multisampleInfo(
       {}, vk::SampleCountFlagBits::e1, VK_FALSE, 1.0f, nullptr, VK_FALSE,
@@ -431,7 +444,8 @@ static void createPipeline() {
 
   vk::PipelineDynamicStateCreateInfo dynamicInfo({}, 2, dynamicStates);
 
-  vk::PipelineLayoutCreateInfo pipelineLayoutInfo({}, 0, nullptr, 0, nullptr);
+  vk::PipelineLayoutCreateInfo pipelineLayoutInfo(
+      {}, 1, &vkctx.descriptorLayout, 0, nullptr);
 
   vkctx.pipelineLayout = vkctx.device.createPipelineLayout(pipelineLayoutInfo);
 
@@ -466,10 +480,9 @@ static void createCommandPool() {
   vkctx.commandPool = vkctx.device.createCommandPool(info);
 }
 
-static vk::Buffer createBuffer(vk::DeviceSize size, vk::BufferUsageFlags usage,
-                               vk::MemoryPropertyFlags props,
-                               VmaMemoryUsage memUsage,
-                               VmaAllocation& allocation) {
+vk::Buffer createBuffer(vk::DeviceSize size, vk::BufferUsageFlags usage,
+                        vk::MemoryPropertyFlags props, VmaMemoryUsage memUsage,
+                        VmaAllocation& allocation) {
   vk::BufferCreateInfo bufferInfo({}, size, usage);
 
   VmaAllocationCreateInfo allocInfo = {};
@@ -485,8 +498,7 @@ static vk::Buffer createBuffer(vk::DeviceSize size, vk::BufferUsageFlags usage,
   return output;
 }
 
-static void copyBuffer(vk::Buffer srcBuffer, vk::Buffer dstBuffer,
-                       vk::DeviceSize size) {
+vk::CommandBuffer beginCommands() {
   vk::CommandBufferAllocateInfo allocInfo(vkctx.commandPool,
                                           vk::CommandBufferLevel::ePrimary, 1);
   vk::CommandBuffer commandBuffer =
@@ -495,18 +507,40 @@ static void copyBuffer(vk::Buffer srcBuffer, vk::Buffer dstBuffer,
   vk::CommandBufferBeginInfo beginInfo(
       vk::CommandBufferUsageFlagBits::eOneTimeSubmit);
   commandBuffer.begin(beginInfo);
-  vk::BufferCopy copy(0, 0, size);
-  commandBuffer.copyBuffer(srcBuffer, dstBuffer, copy);
-  commandBuffer.end();
+
+  return commandBuffer;
+}
+
+void endCommands(vk::CommandBuffer& buffer) {
+  buffer.end();
 
   vk::SubmitInfo submitInfo;
   submitInfo.commandBufferCount = 1;
-  submitInfo.pCommandBuffers = &commandBuffer;
+  submitInfo.pCommandBuffers = &buffer;
 
   vkctx.graphicsQueue.submit(1, &submitInfo, nullptr);
   vkctx.graphicsQueue.waitIdle();
 
-  vkctx.device.freeCommandBuffers(vkctx.commandPool, 1, &commandBuffer);
+  vkctx.device.freeCommandBuffers(vkctx.commandPool, 1, &buffer);
+}
+
+void copyBuffer(vk::Buffer srcBuffer, vk::Buffer dstBuffer,
+                vk::DeviceSize size) {
+  vk::CommandBuffer commandBuffer = beginCommands();
+  vk::BufferCopy copy(0, 0, size);
+  commandBuffer.copyBuffer(srcBuffer, dstBuffer, copy);
+  endCommands(commandBuffer);
+}
+
+static void createTextureSampler() {
+  vk::SamplerCreateInfo info(
+      {}, vk::Filter::eLinear, vk::Filter::eLinear,
+      vk::SamplerMipmapMode::eLinear, vk::SamplerAddressMode::eRepeat,
+      vk::SamplerAddressMode::eRepeat, vk::SamplerAddressMode::eRepeat, 0.0f,
+      VK_TRUE, 16, VK_FALSE, vk::CompareOp::eAlways, 0.0f, 0.0f,
+      vk::BorderColor::eIntOpaqueBlack, VK_FALSE);
+
+  vkctx.textureSampler = vkctx.device.createSampler(info);
 }
 
 static void createVertexBuffer() {
@@ -570,6 +604,68 @@ static void createIndexBuffer() {
   vmaDestroyBuffer(vkctx.allocator, stagingBuffer, stagingAllocation);
 }
 
+static void createUniformBuffers() {
+  vk::DeviceSize bufferSize = sizeof(MVP);
+  vkctx.uniformBuffers.resize(vkctx.swapchainImages.size());
+  vkctx.uniformAllocations.resize(vkctx.swapchainImages.size());
+
+  for (size_t i = 0; i < vkctx.swapchainImages.size(); i++) {
+    VmaAllocation allocation;
+    vkctx.uniformBuffers[i] =
+        createBuffer(bufferSize, vk::BufferUsageFlagBits::eUniformBuffer,
+                     vk::MemoryPropertyFlagBits::eHostVisible |
+                         vk::MemoryPropertyFlagBits::eHostCoherent,
+                     VMA_MEMORY_USAGE_CPU_TO_GPU, allocation);
+    vkctx.uniformAllocations[i] = allocation;
+  }
+}
+
+static void createDescriptorPool() {
+  std::array<vk::DescriptorPoolSize, 2> poolSizes;
+  poolSizes[0] = vk::DescriptorPoolSize(
+      vk::DescriptorType::eUniformBuffer,
+      static_cast<uint32_t>(vkctx.swapchainImages.size()));
+  poolSizes[1] = vk::DescriptorPoolSize(
+      vk::DescriptorType::eCombinedImageSampler,
+      static_cast<uint32_t>(vkctx.swapchainImages.size()));
+
+  vk::DescriptorPoolCreateInfo info(
+      {}, static_cast<uint32_t>(vkctx.swapchainImages.size()),
+      static_cast<uint32_t>(poolSizes.size()), poolSizes.data());
+
+  vkctx.descriptorPool = vkctx.device.createDescriptorPool(info);
+}
+
+static void createDescriptorSets() {
+  std::vector<vk::DescriptorSetLayout> layouts(vkctx.swapchainImages.size(),
+                                               vkctx.descriptorLayout);
+
+  vk::DescriptorSetAllocateInfo allocInfo(vkctx.descriptorPool,
+                                          static_cast<uint32_t>(layouts.size()),
+                                          layouts.data());
+
+  vkctx.descriptorSets = vkctx.device.allocateDescriptorSets(allocInfo);
+
+  for (size_t i = 0; i < layouts.size(); i++) {
+    vk::DescriptorBufferInfo bufferInfo(vkctx.uniformBuffers[i], 0,
+                                        sizeof(MVP));
+    vk::DescriptorImageInfo imageInfo(vkctx.textureSampler,
+                                      vkctx.textureImageView,
+                                      vk::ImageLayout::eShaderReadOnlyOptimal);
+    std::array<vk::WriteDescriptorSet, 2> descriptorWrites;
+    descriptorWrites[0] = vk::WriteDescriptorSet(
+        vkctx.descriptorSets[i], 0, 0, 1, vk::DescriptorType::eUniformBuffer,
+        nullptr, &bufferInfo, nullptr);
+    descriptorWrites[1] =
+        vk::WriteDescriptorSet(vkctx.descriptorSets[i], 1, 0, 1,
+                               vk::DescriptorType::eCombinedImageSampler,
+                               &imageInfo, nullptr, nullptr);
+    vkctx.device.updateDescriptorSets(
+        static_cast<uint32_t>(descriptorWrites.size()), descriptorWrites.data(),
+        0, nullptr);
+  }
+}
+
 static void createCommandBuffers() {
   vk::CommandBufferAllocateInfo allocInfo(
       vkctx.commandPool, vk::CommandBufferLevel::ePrimary,
@@ -601,6 +697,9 @@ static void createCommandBuffers() {
     buffer.bindVertexBuffers(0, std::array<vk::Buffer, 1>({vkctx.vertexBuffer}),
                              {0});
     buffer.bindIndexBuffer(vkctx.indexBuffer, 0, vk::IndexType::eUint16);
+    buffer.bindDescriptorSets(vk::PipelineBindPoint::eGraphics,
+                              vkctx.pipelineLayout, 0, 1,
+                              &vkctx.descriptorSets[i], 0, nullptr);
     buffer.drawIndexed(static_cast<uint32_t>(indices.size()), 1, 0, 0, 0);
     buffer.endRenderPass();
 
@@ -633,6 +732,12 @@ static void cleanupSwapchain() {
   }
 
   vkctx.device.destroySwapchainKHR(vkctx.swapchain);
+
+  for (size_t i = 0; i < vkctx.swapchainImages.size(); i++) {
+    vmaDestroyBuffer(vkctx.allocator, vkctx.uniformBuffers[i],
+                     vkctx.uniformAllocations[i]);
+  }
+  vkctx.device.destroyDescriptorPool(vkctx.descriptorPool);
 }
 
 static void recreateSwapchain() {
@@ -644,7 +749,39 @@ static void recreateSwapchain() {
   createImageViews();
   createRenderPass();
   createFramebuffers();
+  createUniformBuffers();
+  createDescriptorPool();
+  createDescriptorSets();
   createCommandBuffers();
+}
+
+static void updateUniformBuffer(uint32_t imageIndex) {
+  static auto startTime = std::chrono::high_resolution_clock::now();
+
+  auto currentTime = std::chrono::high_resolution_clock::now();
+  float time = std::chrono::duration<float, std::chrono::seconds::period>(
+                   currentTime - startTime)
+                   .count();
+
+  MVP buffer;
+
+  buffer.model = glm::rotate(glm::mat4(1.0f), time * glm::radians(90.0f),
+                             glm::vec3(0.0f, 0.0f, 1.0f));
+  buffer.view = glm::lookAt(glm::vec3(2.0f), glm::vec3(0.0f),
+                            glm::vec3(0.0f, 0.0f, 1.0f));
+  buffer.proj =
+      glm::perspective(glm::radians(45.0f),
+                       static_cast<float>(vkctx.swapchainExtent.width /
+                                          vkctx.swapchainExtent.height),
+                       0.1f, 10.0f);
+  buffer.proj[1][1] *= -1;
+  VmaAllocationInfo info;
+  vmaGetAllocationInfo(vkctx.allocator, vkctx.uniformAllocations[imageIndex],
+                       &info);
+  void* data =
+      vkctx.device.mapMemory(info.deviceMemory, info.offset, info.size);
+  SDL_memcpy(data, &buffer, info.size);
+  vkctx.device.unmapMemory(info.deviceMemory);
 }
 
 void drawFrame() {
@@ -676,6 +813,8 @@ void drawFrame() {
 
   vk::PipelineStageFlags waitStages[] = {
       vk::PipelineStageFlagBits::eColorAttachmentOutput};
+
+  updateUniformBuffer(imageIndex);
 
   vk::SubmitInfo submitInfo(1, &vkctx.imageSemaphores[vkctx.currentFrame],
                             waitStages, 1, &vkctx.commandBuffers[imageIndex], 1,
@@ -714,17 +853,28 @@ void initVulkan() {
   createSwapchain();
   createImageViews();
   createRenderPass();
+  createDescriptorSetLayout();
   createPipeline();
   createFramebuffers();
   createCommandPool();
+  createTextureImage();
+  createTextureImageView();
+  createTextureSampler();
   createVertexBuffer();
   createIndexBuffer();
+  createUniformBuffers();
+  createDescriptorPool();
+  createDescriptorSets();
   createCommandBuffers();
   createSyncObjects();
 }
 
 void cleanupVulkan() {
   cleanupSwapchain();
+  vkctx.device.destroySampler(vkctx.textureSampler);
+  vkctx.device.destroyImageView(vkctx.textureImageView);
+  vmaDestroyImage(vkctx.allocator, vkctx.textureImage, vkctx.textureAllocation);
+  vkctx.device.destroyDescriptorSetLayout(vkctx.descriptorLayout);
   vmaDestroyBuffer(vkctx.allocator, vkctx.vertexBuffer, vkctx.vertexAllocation);
   vmaDestroyBuffer(vkctx.allocator, vkctx.indexBuffer, vkctx.indexAllocation);
   vmaDestroyAllocator(vkctx.allocator);

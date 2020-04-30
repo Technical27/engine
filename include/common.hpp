@@ -55,6 +55,13 @@ struct VulkanContext {
   vk::Queue graphicsQueue;
   vk::Queue presentQueue;
 
+  vk::DescriptorSetLayout descriptorLayout;
+  vk::DescriptorPool descriptorPool;
+  std::vector<vk::DescriptorSet> descriptorSets;
+
+  std::vector<vk::Buffer> uniformBuffers;
+  std::vector<VmaAllocation> uniformAllocations;
+
   std::vector<vk::Semaphore> imageSemaphores;
   std::vector<vk::Semaphore> renderSemaphores;
   std::vector<vk::Fence> inFlightFences;
@@ -67,6 +74,11 @@ struct VulkanContext {
   bool minimized = false;
 
   VmaAllocator allocator;
+
+  vk::Image textureImage;
+  vk::ImageView textureImageView;
+  vk::Sampler textureSampler;
+  VmaAllocation textureAllocation;
 };
 
 #endif
